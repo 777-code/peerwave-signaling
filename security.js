@@ -11,6 +11,17 @@ function generateRoomId() {
   return result;
 }
 
+// Generate 8-char lowercase alphanumeric peer ID
+function generatePeerId() {
+  const charset = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let result = '';
+  const randomValues = crypto.randomBytes(8);
+  for (let i = 0; i < 8; i++) {
+    result += charset[randomValues[i] % charset.length];
+  }
+  return result;
+}
+
 // Strictly allow only defined signaling types
 const ALLOWED_TYPES = ['join', 'offer', 'answer', 'ice'];
 
@@ -45,10 +56,23 @@ function validatePayload(data) {
     }
   }
 
+  if (parsed.to) {
+    if (typeof parsed.to !== 'string' || !/^[a-z0-9]{8}$/.test(parsed.to)) {
+      throw new Error('Invalid to field format.');
+    }
+  }
+
+  if (parsed.from) {
+    if (typeof parsed.from !== 'string' || !/^[a-z0-9]{8}$/.test(parsed.from)) {
+      throw new Error('Invalid from field format.');
+    }
+  }
+
   return parsed;
 }
 
 module.exports = {
   generateRoomId,
+  generatePeerId,
   validatePayload,
 };

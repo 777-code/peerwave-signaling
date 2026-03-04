@@ -1,8 +1,8 @@
 require('dotenv').config();
 const http = require('http');
 const WebSocket = require('ws');
-const { validatePayload } = require('./security');
-const { createRoom, addPeerToRoom, removePeerFromRoom, getOtherPeer, getRoom } = require('./roomManager');
+const { validatePayload, generatePeerId } = require('./security');
+const { createRoom, addPeerToRoom, removePeerFromRoom, getOtherPeers, getPeerById, getRoom } = require('./roomManager');
 
 const PORT = process.env.PORT || 8080;
 
@@ -67,10 +67,10 @@ wss.on('connection', (ws, req) => {
 
         try {
             if (type === 'join') {
-                handleJoin(ws, roomId);
+                handleJoin(ws, roomId, parsed.peerId);
             } else if (['offer', 'answer', 'ice'].includes(type)) {
-                // Manually inject lowercased ID back into the relay object
-                handleRelay(ws, { type, roomId: ws.roomId, payload });
+                // Relay explicit routing payload
+                handleRelay(ws, parsed);
             }
         } catch (error) {
             // General catch for room errors (e.g. room full, room not found)
@@ -80,14 +80,15 @@ wss.on('connection', (ws, req) => {
     });
 
     ws.on('close', () => {
-        console.log(`[DISCONNECT] Connection closed from ${ip}`);
-        if (ws.roomId) {
+        console.log(`[DISCONNECT] Connection closed from ${ip} (PeerId: ${ws.peerId || 'Unknown'})`);
+        if (ws.roomId && ws.peerId) {
+            const others = getOtherPeers(ws.roomId, ws.peerId);
             removePeerFromRoom(ws.roomId, ws);
 
-            // Notify other peer
-            const otherPeer = getOtherPeer(ws.roomId, ws);
-            if (otherPeer && otherPeer.readyState === WebSocket.OPEN) {
-                otherPeer.send(JSON.stringify({ type: 'peer-disconnected' }));
+            for (const peer of others) {
+                if (peer.readyState === WebSocket.OPEN) {
+                    peer.send(JSON.stringify({ type: 'peer-left', peerId: ws.peerId }));
+                }
             }
         }
     });
@@ -97,46 +98,58 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-function handleJoin(ws, requestedRoomId) {
+function handleJoin(ws, requestedRoomId, requestedPeerId) {
+    ws.peerId = requestedPeerId && /^[a-z0-9]{8}$/.test(requestedPeerId) ? requestedPeerId : generatePeerId();
+
     if (!requestedRoomId) {
         // Create new room with random ID
         const room = createRoom();
-        ws.send(JSON.stringify({ type: 'room-created', roomId: room.roomId }));
         addPeerToRoom(room.roomId, ws);
+        ws.send(JSON.stringify({ type: 'room-created', roomId: room.roomId, peerId: ws.peerId, peers: [] }));
     } else {
         const existingRoom = getRoom(requestedRoomId);
         if (existingRoom) {
             // Join existing room
             addPeerToRoom(requestedRoomId, ws);
-            ws.send(JSON.stringify({ type: 'room-joined', roomId: requestedRoomId }));
+            const others = getOtherPeers(requestedRoomId, ws.peerId);
+            const otherIds = others.map(p => p.peerId);
 
-            // Notify the other peer that someone joined, they should initiate offer
-            const otherPeer = getOtherPeer(requestedRoomId, ws);
-            if (otherPeer && otherPeer.readyState === WebSocket.OPEN) {
-                otherPeer.send(JSON.stringify({ type: 'peer-joined' }));
+            ws.send(JSON.stringify({ type: 'room-joined', roomId: requestedRoomId, peerId: ws.peerId, peers: otherIds }));
+
+            for (const peer of others) {
+                if (peer.readyState === WebSocket.OPEN) {
+                    peer.send(JSON.stringify({ type: 'peer-joined', peerId: ws.peerId }));
+                }
             }
         } else {
             // Create requested custom room
             const room = createRoom(requestedRoomId);
-            ws.send(JSON.stringify({ type: 'room-created', roomId: room.roomId }));
             addPeerToRoom(room.roomId, ws);
+            ws.send(JSON.stringify({ type: 'room-created', roomId: room.roomId, peerId: ws.peerId, peers: [] }));
         }
     }
 }
 
 function handleRelay(ws, parsedMessage) {
-    if (!ws.roomId) {
-        throw new Error('Cannot relay message: Peer is not in a room.');
-    }
+    if (!ws.roomId) throw new Error('Cannot relay message: Peer is not in a room.');
+    if (!ws.peerId) throw new Error('Sender has no peerId.');
 
-    const otherPeer = getOtherPeer(ws.roomId, ws);
-    if (!otherPeer) {
-        // It's possible the other peer disconnected during dialing, we just ignore
-        console.log(`[WARN] Peer tried to send ${parsedMessage.type} but no other peer is in room ${ws.roomId}`);
+    if (!parsedMessage.to) {
+        console.log(`[WARN] Peer ${ws.peerId} tried to relay ${parsedMessage.type} without a target 'to' field.`);
         return;
     }
 
-    if (otherPeer.readyState === WebSocket.OPEN) {
-        otherPeer.send(JSON.stringify(parsedMessage));
+    const targetPeer = getPeerById(ws.roomId, parsedMessage.to);
+    if (!targetPeer) {
+        console.log(`[WARN] Peer ${ws.peerId} tried to route ${parsedMessage.type} to unknown peer ${parsedMessage.to}`);
+        return;
+    }
+
+    // Embed strict sender identity so the target knows who it came from relative to Perfect Negotiation context
+    parsedMessage.from = ws.peerId;
+    parsedMessage.roomId = ws.roomId;
+
+    if (targetPeer.readyState === WebSocket.OPEN) {
+        targetPeer.send(JSON.stringify(parsedMessage));
     }
 }

@@ -21,7 +21,7 @@ function createRoom(customId) {
 
     const room = {
         roomId,
-        peers: new Set(),
+        peers: new Map(),
         createdAt: Date.now(),
     };
 
@@ -44,34 +44,28 @@ function addPeerToRoom(roomId, ws) {
         throw new Error('Room not found');
     }
 
-    if (room.peers.size >= 2) {
-        throw new Error('Room is full (max 2 peers).');
+    if (room.peers.size >= 6) {
+        throw new Error('Room is full (max 6 peers).');
     }
 
-    room.peers.add(ws);
+    room.peers.set(ws.peerId, ws);
     ws.roomId = roomId;
 
     // Clear idle timeout
     clearTimeout(room.timeoutId);
 
-    // If room is full (2 peers), we transition from idle to absolute maximum timeout
-    if (room.peers.size === 2) {
-        console.log(`[INFO] Room ${roomId} full. Switching to absolute timeout.`);
-        room.timeoutId = setTimeout(() => destroyRoom(roomId), MAX_ABSOLUTE_TIMEOUT);
-    } else {
-        // Still 1 peer. Keep an idle timeout so they dont hold room forever if nobody joins.
-        room.timeoutId = setTimeout(() => destroyRoom(roomId), MAX_IDLE_TIMEOUT);
-    }
+    // Apply absolute timeout once room has active members
+    room.timeoutId = setTimeout(() => destroyRoom(roomId), MAX_ABSOLUTE_TIMEOUT);
 }
 
 function removePeerFromRoom(roomId, ws) {
     const room = rooms.get(roomId);
     if (!room) return;
 
-    room.peers.delete(ws);
+    room.peers.delete(ws.peerId);
     delete ws.roomId;
 
-    console.log(`[INFO] Peer left room ${roomId}. Peers remaining: ${room.peers.size}`);
+    console.log(`[INFO] Peer ${ws.peerId} left room ${roomId}. Peers remaining: ${room.peers.size}`);
 
     // If room is empty, clear absolute timeout and re-establish 5min idle timeout
     if (room.peers.size === 0) {
@@ -81,16 +75,23 @@ function removePeerFromRoom(roomId, ws) {
     }
 }
 
-function getOtherPeer(roomId, senderWs) {
+function getOtherPeers(roomId, excludePeerId) {
     const room = rooms.get(roomId);
-    if (!room) return null;
+    if (!room) return [];
 
-    for (const peer of room.peers) {
-        if (peer !== senderWs) {
-            return peer;
+    const others = [];
+    for (const [id, peer] of room.peers.entries()) {
+        if (id !== excludePeerId) {
+            others.push(peer);
         }
     }
-    return null;
+    return others;
+}
+
+function getPeerById(roomId, peerId) {
+    const room = rooms.get(roomId);
+    if (!room) return null;
+    return room.peers.get(peerId) || null;
 }
 
 function destroyRoom(roomId) {
@@ -99,7 +100,7 @@ function destroyRoom(roomId) {
         clearTimeout(room.timeoutId);
 
         // Close remaining connections gracefully 
-        for (const peer of room.peers) {
+        for (const peer of room.peers.values()) {
             peer.send(JSON.stringify({ type: 'server-error', message: 'Room timeout expired.' }));
             peer.terminate();
         }
@@ -114,6 +115,7 @@ module.exports = {
     getRoom,
     addPeerToRoom,
     removePeerFromRoom,
-    getOtherPeer,
+    getOtherPeers,
+    getPeerById,
     destroyRoom
 };
