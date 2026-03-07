@@ -22,6 +22,11 @@ function generatePeerId() {
   return result;
 }
 
+// Hash a room password using SHA-256
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
+
 // Strictly allow only defined signaling types
 const ALLOWED_TYPES = ['join', 'offer', 'answer', 'ice'];
 
@@ -75,4 +80,5 @@ module.exports = {
   generateRoomId,
   generatePeerId,
   validatePayload,
+  hashPassword,
 };

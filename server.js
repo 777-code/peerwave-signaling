@@ -2,7 +2,7 @@ require('dotenv').config();
 const http = require('http');
 const WebSocket = require('ws');
 const { validatePayload, generatePeerId } = require('./security');
-const { createRoom, addPeerToRoom, removePeerFromRoom, getOtherPeers, getPeerById, getRoom } = require('./roomManager');
+const { createRoom, addPeerToRoom, removePeerFromRoom, getOtherPeers, getPeerById, getRoom, validateRoomPassword } = require('./roomManager');
 
 const PORT = process.env.PORT || 8080;
 
@@ -67,7 +67,7 @@ wss.on('connection', (ws, req) => {
 
         try {
             if (type === 'join') {
-                handleJoin(ws, roomId, parsed.peerId);
+                handleJoin(ws, roomId, parsed.peerId, parsed.password);
             } else if (['offer', 'answer', 'ice'].includes(type)) {
                 // Relay explicit routing payload
                 handleRelay(ws, parsed);
@@ -98,17 +98,22 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-function handleJoin(ws, requestedRoomId, requestedPeerId) {
+function handleJoin(ws, requestedRoomId, requestedPeerId, password) {
     ws.peerId = requestedPeerId && /^[a-z0-9]{8}$/.test(requestedPeerId) ? requestedPeerId : generatePeerId();
 
     if (!requestedRoomId) {
-        // Create new room with random ID
-        const room = createRoom();
+        // Create new room with random ID (password optional)
+        const room = createRoom(null, password);
         addPeerToRoom(room.roomId, ws);
         ws.send(JSON.stringify({ type: 'room-created', roomId: room.roomId, peerId: ws.peerId, peers: [] }));
     } else {
         const existingRoom = getRoom(requestedRoomId);
         if (existingRoom) {
+            // Validate password before joining
+            if (!validateRoomPassword(requestedRoomId, password)) {
+                throw new Error('Invalid room password.');
+            }
+
             // Join existing room
             addPeerToRoom(requestedRoomId, ws);
             const others = getOtherPeers(requestedRoomId, ws.peerId);
@@ -122,8 +127,8 @@ function handleJoin(ws, requestedRoomId, requestedPeerId) {
                 }
             }
         } else {
-            // Create requested custom room
-            const room = createRoom(requestedRoomId);
+            // Create requested custom room (password optional)
+            const room = createRoom(requestedRoomId, password);
             addPeerToRoom(room.roomId, ws);
             ws.send(JSON.stringify({ type: 'room-created', roomId: room.roomId, peerId: ws.peerId, peers: [] }));
         }

@@ -1,4 +1,4 @@
-const { generateRoomId } = require('./security');
+const { generateRoomId, hashPassword } = require('./security');
 
 const rooms = new Map();
 
@@ -6,7 +6,8 @@ const rooms = new Map();
  * Room structure
  * {
  *   roomId: string,
- *   peers: Set<WebSocket>,
+ *   passwordHash: string | null,
+ *   peers: Map<peerId, WebSocket>,
  *   createdAt: number,
  *   timeoutId: NodeJS.Timeout
  * }
@@ -16,11 +17,12 @@ const rooms = new Map();
 const MAX_ABSOLUTE_TIMEOUT = 30 * 60 * 1000; // 30 mins
 const MAX_IDLE_TIMEOUT = 5 * 60 * 1000;     // 5 mins
 
-function createRoom(customId) {
+function createRoom(customId, password) {
     const roomId = customId || generateRoomId();
 
     const room = {
         roomId,
+        passwordHash: password ? hashPassword(password) : null,
         peers: new Map(),
         createdAt: Date.now(),
     };
@@ -29,8 +31,19 @@ function createRoom(customId) {
     room.timeoutId = setTimeout(() => destroyRoom(roomId), MAX_IDLE_TIMEOUT);
 
     rooms.set(roomId, room);
-    console.log(`[INFO] Room created: ${roomId}`);
+    console.log(`[INFO] Room created: ${roomId} (password: ${password ? 'yes' : 'none'})`);
     return room;
+}
+
+function validateRoomPassword(roomId, password) {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    // If room has no password, anyone can join
+    if (!room.passwordHash) return true;
+    // If room has password but none provided, reject
+    if (!password) return false;
+    // Compare hashes
+    return room.passwordHash === hashPassword(password);
 }
 
 function getRoom(roomId) {
@@ -117,5 +130,6 @@ module.exports = {
     removePeerFromRoom,
     getOtherPeers,
     getPeerById,
-    destroyRoom
+    destroyRoom,
+    validateRoomPassword
 };
